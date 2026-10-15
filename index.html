@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VCF Contact Card Maker</title>
+  <style>
+    /* Positioning only */
+    body { max-width: 480px; margin: 0 auto; padding: 16px; }
+    form label { display: block; margin-top: 12px; }
+    form input { display: block; width: 100%; box-sizing: border-box; }
+    #optional { margin-top: 12px; }
+    .actions { margin-top: 16px; display: flex; gap: 8px; }
+    #result { margin-top: 24px; }
+    #tag-link { display: block; width: 100%; box-sizing: border-box; }
+    #preview { white-space: pre-wrap; overflow-wrap: anywhere; }
+    #tap-actions { display: flex; flex-direction: column; gap: 12px; }
+    #tap-actions a, #tap-actions button { display: block; text-align: center; padding: 12px; }
+  </style>
+</head>
+<body>
+  <h1>VCF Contact Card Maker</h1>
+
+  <!-- Shown when someone taps an NFC card (the page opens with contact data in the link) -->
+  <section id="tap-view" hidden>
+    <h2>Emergency contact</h2>
+    <p id="tap-for" hidden></p>
+    <p><strong id="tap-name"></strong></p>
+    <p id="tap-phone"></p>
+    <p id="tap-email" hidden></p>
+    <p id="tap-org" hidden></p>
+
+    <div id="tap-actions">
+      <a id="tap-call" href="#">Call</a>
+      <button type="button" id="tap-save">Save contact</button>
+    </div>
+
+    <p><a href="./">Create or update a card</a></p>
+  </section>
+
+  <!-- Shown when the page is opened normally, to create a card -->
+  <section id="create-view">
+    <p>Fill in the fields and press <strong>Create Card</strong>.</p>
+    <p>Nothing is saved or sent anywhere. Any information in the text fields is erased upon closing the tab, refreshing, and/or pressing "clear".</p>
+
+    <form id="contact-form" autocomplete="off" novalidate>
+      <fieldset>
+        <legend>Required</legend>
+
+        <label for="first">First name
+          <input id="first" name="first" type="text" required>
+        </label>
+
+        <label for="last">Last name (or initial)
+          <input id="last" name="last" type="text" required>
+        </label>
+
+        <label for="phone">Phone number
+          <input id="phone" name="phone" type="tel" inputmode="tel" required>
+        </label>
+      </fieldset>
+
+      <details id="optional">
+        <summary>Optional (expand/collapse to view)</summary>
+        <fieldset>
+          <label for="email">Email
+            <input id="email" name="email" type="email">
+          </label>
+
+          <label for="org">Organization
+            <input id="org" name="org" type="text">
+          </label>
+
+          <label for="owner">Emergency contact for (card owner's name)
+            <input id="owner" name="owner" type="text">
+          </label>
+        </fieldset>
+      </details>
+
+      <p id="error" role="alert" hidden></p>
+
+      <div class="actions">
+        <button type="submit">Create Card</button>
+        <button type="reset">Clear</button>
+      </div>
+    </form>
+
+    <section id="result" hidden>
+      <h2>Card ready</h2>
+
+      <h3>NFC tag link</h3>
+      <p>Write this link to the NFC tag as a URL / website record.</p>
+      <input id="tag-link" type="text" readonly>
+      <div class="actions">
+        <button type="button" id="copy-link">Copy link</button>
+        <a id="test-link" href="#" target="_blank" rel="noopener">Test link</a>
+      </div>
+      <p id="copy-status" role="status"></p>
+      <p id="link-warning" hidden>This page is open as a file on your computer, so this link only works on this device. Host the page online (for example GitHub Pages), open it from there, and create the link again.</p>
+
+      <h3>VCF file</h3>
+      <p>File name: <code id="filename"></code></p>
+      <button type="button" id="download">Download VCF</button>
+
+      <details>
+        <summary>Preview card contents</summary>
+        <pre id="preview"></pre>
+      </details>
+    </section>
+  </section>
+
+  <script>
+    (function () {
+      var form = document.getElementById('contact-form');
+      var errorEl = document.getElementById('error');
+      var resultEl = document.getElementById('result');
+      var filenameEl = document.getElementById('filename');
+      var previewEl = document.getElementById('preview');
+      var tagLinkEl = document.getElementById('tag-link');
+      var testLinkEl = document.getElementById('test-link');
+      var copyStatusEl = document.getElementById('copy-status');
+      var linkWarningEl = document.getElementById('link-warning');
+      var createView = document.getElementById('create-view');
+      var tapView = document.getElementById('tap-view');
+
+      // Held in memory only until the page is closed, cleared, or the form changes.
+      var card = null;
+
+      // Escape text values per the vCard spec.
+      function esc(value) {
+        return value
+          .replace(/\\/g, '\\\\')
+          .replace(/\n/g, '\\n')
+          .replace(/[,;]/g, '\\$&');
+      }
+
+      // Keep digits and a leading + so the number dials correctly.
+      function cleanPhone(phone) {
+        var digits = phone.replace(/\D/g, '');
+        return (phone.trim().charAt(0) === '+' ? '+' : '') + digits;
+      }
+
+      // Builds the .vcf file name and contents from the contact data.
+      // data = { first, last, phone, email, org, owner }
+      function buildCard(data) {
+        var lines = [
+          'BEGIN:VCARD',
+          'VERSION:3.0',
+          'N:' + esc(data.last) + ';' + esc(data.first) + ';;;',
+          'FN:' + esc(data.first + ' ' + data.last),
+          'TEL;TYPE=CELL:' + data.phone
+        ];
+        if (data.email) lines.push('EMAIL;TYPE=INTERNET:' + esc(data.email));
+        if (data.org) lines.push('ORG:' + esc(data.org));
+        if (data.owner) lines.push('NOTE:' + esc('Emergency contact for ' + data.owner));
+        lines.push('END:VCARD');
+
+        // e.g. Jane Smith, 555-867-5309 -> JS5309.vcf
+        var initials = (data.first.charAt(0) + data.last.charAt(0)).toUpperCase().replace(/[^A-Z0-9]/g, '');
+        var digits = data.phone.replace(/\D/g, '');
+        return {
+          filename: (initials || 'contact') + digits.slice(-4) + '.vcf',
+          text: lines.join('\r\n') + '\r\n'
+        };
+      }
+
+      // Contact data goes after the # in the link. Browsers never send that part
+      // to the website, so the host never receives anyone's details.
+      // Short keys keep the link small enough for small NFC tags.
+      var KEYS = { first: 'f', last: 'l', phone: 't', email: 'e', org: 'o', owner: 'n' };
+
+      function buildLink(data) {
+        var params = new URLSearchParams();
+        Object.keys(KEYS).forEach(function (field) {
+          if (data[field]) params.set(KEYS[field], data[field]);
+        });
+        return location.origin + location.pathname + '#' + params.toString();
+      }
+
+      function readLink() {
+        var params = new URLSearchParams(location.hash.slice(1));
+        var data = {};
+        Object.keys(KEYS).forEach(function (field) {
+          data[field] = (params.get(KEYS[field]) || '').trim();
+        });
+        return data;
+      }
+
+      function downloadCard(c) {
+        var blob = new Blob([c.text], { type: 'text/vcard;charset=utf-8' });
+        var url = URL.createObjectURL(blob);
+        var link = document.createElement('a');
+        link.href = url;
+        link.download = c.filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+      }
+
+      // ---------- Tap view ----------
+
+      function showTapView(data) {
+        var tapCard = buildCard(data);
+
+        document.getElementById('tap-name').textContent = data.first + ' ' + data.last;
+        document.getElementById('tap-phone').textContent = data.phone;
+        document.getElementById('tap-call').href = 'tel:' + data.phone;
+        document.getElementById('tap-call').textContent = 'Call ' + data.first;
+
+        [['tap-for', data.owner && 'Emergency contact for ' + data.owner],
+         ['tap-email', data.email],
+         ['tap-org', data.org]].forEach(function (pair) {
+          var el = document.getElementById(pair[0]);
+          el.textContent = pair[1] || '';
+          el.hidden = !pair[1];
+        });
+
+        document.getElementById('tap-save').onclick = function () { downloadCard(tapCard); };
+
+        createView.hidden = true;
+        tapView.hidden = false;
+      }
+
+      function showCreateView() {
+        tapView.hidden = true;
+        createView.hidden = false;
+      }
+
+      function route() {
+        var data = readLink();
+        if (data.first && data.last && data.phone) {
+          showTapView(data);
+        } else {
+          showCreateView();
+        }
+      }
+
+      // ---------- Create view ----------
+
+      function showError(message) {
+        errorEl.textContent = message;
+        errorEl.hidden = false;
+      }
+
+      function clearResult() {
+        card = null;
+        resultEl.hidden = true;
+        filenameEl.textContent = '';
+        previewEl.textContent = '';
+        tagLinkEl.value = '';
+        testLinkEl.href = '#';
+        copyStatusEl.textContent = '';
+        errorEl.hidden = true;
+        errorEl.textContent = '';
+      }
+
+      form.addEventListener('submit', function (event) {
+        event.preventDefault();
+        clearResult();
+
+        var data = {
+          first: form.first.value.trim(),
+          last: form.last.value.trim(),
+          phone: form.phone.value.trim(),
+          email: form.email.value.trim(),
+          org: form.org.value.trim(),
+          owner: form.owner.value.trim()
+        };
+
+        if (!data.first || !data.last || !data.phone) {
+          showError('First name, last name (or initial), and phone number are required.');
+          return;
+        }
+        if (data.phone.replace(/\D/g, '').length < 7) {
+          showError('Phone number must contain at least 7 digits.');
+          return;
+        }
+        if (data.email && !form.email.checkValidity()) {
+          showError('Email address does not look valid.');
+          return;
+        }
+
+        data.phone = cleanPhone(data.phone);
+        card = buildCard(data);
+
+        var link = buildLink(data);
+        tagLinkEl.value = link;
+        testLinkEl.href = link;
+        linkWarningEl.hidden = location.protocol !== 'file:';
+
+        filenameEl.textContent = card.filename;
+        previewEl.textContent = card.text;
+        resultEl.hidden = false;
+      });
+
+      // Any edit or reset invalidates the processed card, hiding the results.
+      form.addEventListener('input', clearResult);
+      form.addEventListener('reset', clearResult);
+
+      document.getElementById('download').addEventListener('click', function () {
+        if (card) downloadCard(card);
+      });
+
+      document.getElementById('copy-link').addEventListener('click', function () {
+        tagLinkEl.select();
+        if (navigator.clipboard) {
+          navigator.clipboard.writeText(tagLinkEl.value).then(function () {
+            copyStatusEl.textContent = 'Link copied.';
+          }, function () {
+            copyStatusEl.textContent = 'Could not copy automatically. The link is selected; copy it manually.';
+          });
+        } else {
+          copyStatusEl.textContent = 'The link is selected; copy it manually.';
+        }
+      });
+
+      // Empty the form whenever the page is shown, so browsers can't restore typed text after a refresh or Back.
+      window.addEventListener('pageshow', function () { form.reset(); });
+      window.addEventListener('hashchange', route);
+      route();
+    })();
+  </script>
+</body>
+</html>
