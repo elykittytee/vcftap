@@ -16,14 +16,13 @@
     #preview { white-space: pre-wrap; overflow-wrap: anywhere; }
     #tap-actions { display: flex; flex-direction: column; gap: 12px; }
     #tap-actions a, #tap-actions button { display: block; text-align: center; padding: 12px; }
+    #disclaimer { margin-top: 24px; }
   </style>
 </head>
 <body>
-  <h1>VCF Contact Card Maker</h1>
-
   <!-- Shown when someone taps an NFC card (the page opens with contact data in the link) -->
   <section id="tap-view" hidden>
-    <h2>Emergency contact</h2>
+    <h1>Emergency Contact</h1>
     <p id="tap-for" hidden></p>
     <p><strong id="tap-name"></strong></p>
     <p id="tap-phone"></p>
@@ -35,11 +34,14 @@
       <button type="button" id="tap-save">Save contact</button>
     </div>
 
+    <p id="disclaimer"><strong>If the person you are calling for is experiencing a life-threatening emergency, severe injury, or is in immediate danger, call 911 FIRST.</strong></p>
+
     <p><a href="./">Create or update a card</a></p>
   </section>
 
   <!-- Shown when the page is opened normally, to create a card -->
   <section id="create-view">
+    <h1>VCF Contact Card Maker</h1>
     <p>Fill in the fields and press <strong>Create Card</strong>.</p>
     <p>Nothing is saved or sent anywhere. Any information in the text fields is erased upon closing the tab, refreshing, and/or pressing "clear".</p>
 
@@ -218,11 +220,13 @@
 
         document.getElementById('tap-save').onclick = function () { downloadCard(tapCard); };
 
+        document.title = 'Emergency Contact';
         createView.hidden = true;
         tapView.hidden = false;
       }
 
       function showCreateView() {
+        document.title = 'VCF Contact Card Maker';
         tapView.hidden = true;
         createView.hidden = false;
       }
